@@ -39,6 +39,8 @@ def tweet():
 
     return '', 200
 
+#Default JSON encoder는 set을 JSON으로 변환할 수 없다.
+#그러므로 JSON encoder를 오버라이딩 => set을 list로 변환하여 JSON으로 변환 가능하게 해야함
 class CustomJSONEncoder(JSONEncoder):
     def default(self, obj):
         if isinstance(obj, set):
