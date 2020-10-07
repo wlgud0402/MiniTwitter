@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request, current_app
 from flask.json import JSONEncoder
 from sqlalchemy import create_engine, text
 
-app = Flask(__name__)
+# app = Flask(__name__)
 # dict의 key에 대한 value가 set일 때, list로 변경, 그 이외에는 원래의 동작대로
 
 
@@ -17,7 +17,7 @@ def get_user(user_id):
     user = current_app.database.execute(text("""
     SELECT id, name, email, profile FROM users WHERE id =:user_id
     """), {"user_id": user_id}).fetchone()
-    return dict(id=user["id"], name=user["name"], email=user["email"], profile=user["profile"])
+    return {'id': user["id"], 'name': user["name"], 'email': user["email"], 'profile': user["profile"]} if user else None
 
 
 def insert_user(user):
@@ -32,6 +32,20 @@ def insert_tweet(user_tweet):
     """), user_tweet).rowcount
 
 
+def insert_follow(user_follow):
+    return current_app.database.execute(text("""
+    INSERT INTO users_follow_list (user_id, follow_user_id) VALUES (:id, :follow)
+    """), user_follow).rowcount
+
+
+def insert_unfollow(user_unfollow):
+    return current_app.database.execute(text("""
+    DELETE FROM users_follow_list
+    WHERE user_id = :id
+    AND follow_user_id = :unfollow
+    """), user_unfollow).rowcount
+
+
 def get_timeline(user_id):
     timeline = current_app.database.execute(text("""
     SELECT t.user_id, t.tweet FROM tweets t
@@ -43,26 +57,14 @@ def get_timeline(user_id):
     return [{"user_id": tweet["user_id"], "tweet": tweet["tweet"]} for tweet in timeline]
 
 
-def insert_follow(user_follow):
-    current_app.database.execute(text("""
-    INSERT INTO users_follow_list (user_id, follow_user_id) VALUES (:id, :follow)
-    """), user_follow)
-
-
-def insert_unfollow(user_unfollow):
-    current_app.database.execute(text("""
-    DELETE FROM users_follow_list
-    WHERE user_id = :id
-    AND follow_user_id = :unfollow
-    """), user_unfollow)
-
-
 # Flask가 create_app이라는 이름의 함수를 자동으로 factory 함수로 인식, Flask 실행함.
 # test_config이라는 parameter는 unit test를 실행시킬 때, 테스트용 데이터베이스의 설정 정보를 적용하기 위함.
 def create_app(test_config=None):
     app = Flask(__name__)
 
-    if not test_config:
+    app.json_encoder = CustomJSONEncoder
+
+    if test_config is None:
         app.config.from_pyfile("config.py")
     else:
         app.config.update(test_config)
@@ -94,10 +96,6 @@ def create_app(test_config=None):
 
         return "", 200
 
-    @app.route("/timeline/<int:user_id>", methods=["GET"])
-    def timeline(user_id):
-        return jsonify(dict(user_id=user_id, timeline=get_timeline(user_id)))
-
     @app.route("/follow", methods=["POST"])
     def follow():
         payload = request.json
@@ -110,7 +108,11 @@ def create_app(test_config=None):
         insert_unfollow(payload)
         return "", 200
 
+    @app.route("/timeline/<int:user_id>", methods=["GET"])
+    def timeline(user_id):
+        return jsonify({'user_id': user_id, 'timeline': get_timeline(user_id)})
+
     return app  # Flask instance를 return
 
 
-app.run(port=5000, debug=True)
+# app.run(port=5000, debug=True)
