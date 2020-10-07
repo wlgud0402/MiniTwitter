@@ -2,148 +2,115 @@ from flask import Flask, jsonify, request, current_app
 from flask.json import JSONEncoder
 from sqlalchemy import create_engine, text
 
-# app = Flask(__name__)
-# app.users = {}
-# app.id_count = 1
-
-
-def create_app(test_config=None):
-    app = Flask(__name__)
-
-    if test_config is None:
-        app.config.from_pyfile("config.py")
-    else:
-        app.config.update(test_config)
-
-    database = create_engine(
-        app.config['DB_URL'], encoding='utf-8', max_overflow=0)
-    app.database = database
-    return app
-
-
-# def create_app(test_config=None):
-#     app = Flask(__name__)
-#     app.config.from_pyfile('config.py')
-
-#     database = create_engine(app.config['DB_URL'], encoding='utf-8')
-#     app.database = database
-
-#     @app.route('/sign-up', methods=['POST'])
-#     def sign_up():
-#         user = request.json
-#         user_id = app.database.execute(text("""
-#                                             INSERT INTO users (
-#                                             email,
-#                                             password
-#                                            ) VALUES (
-#                                             :email,
-#                                             :password
-#                                            )
-#                                             """), user).lastrowid
-
-#         return "", 200
-
-#     return app
-
-
-@app.route("/ping", methods=['GET'])
-def ping():
-    return "pong"
-
-
-@app.route("/sign-up", methods=['POST'])
-def sign_up():
-    new_user = request.json
-    new_user_id = app.database.execute(text("""INSERT INTO users (name,email,profile,hashed_password)
-                                                VALUES (:name,:email,:profile,:password)"""), new_user).lastrowid
-
-    row = current_app.database.execute(text("""SELECT id, name, email, profile FROM users WHERE id=:user_id"""),
-                                       {'user_id': new_user_id}).fetchone()
-
-    created_user = {
-        'id': row['id'],
-        'name': row['name'],
-        'email': row['email'],
-        'profile': row['profile']
-    } if row else None
-
-    return jsonify(created_user)
-
-
-app.tweets = []
-
-
-@app.route("/tweet", methods=['POST'])
-def tweet():
-    user_tweet = request.json
-    tweet = user_tweet['tweet']
-
-    if len(tweet) > 300:
-        return "300자를 초과했습니다.", 400
-
-    app.database.execute(text(
-        """INSERT INTO tweets(user_id, tweet) VALUES(: id, : tweet) """), user_tweet)
-
-    return '', 200
-
-# Default JSON encoder는 set을 JSON으로 변환할 수 없다.
-# 그러므로 JSON encoder를 오버라이딩 => set을 list로 변환하여 JSON으로 변환 가능하게 해야함
+app = Flask(__name__)
+# dict의 key에 대한 value가 set일 때, list로 변경, 그 이외에는 원래의 동작대로
 
 
 class CustomJSONEncoder(JSONEncoder):
     def default(self, obj):
         if isinstance(obj, set):
             return list(obj)
-
         return JSONEncoder.default(self, obj)
 
 
-app.json_encoder = CustomJSONEncoder
+def get_user(user_id):
+    user = current_app.database.execute(text("""
+    SELECT id, name, email, profile FROM users WHERE id =:user_id
+    """), {"user_id": user_id}).fetchone()
+    return dict(id=user["id"], name=user["name"], email=user["email"], profile=user["profile"])
 
 
-@ app.route("/follow", methods=['POST'])
-def follow():
-    payload = request.json
-    user_id = int(payload['id'])
-    user_id_to_follow = int(payload['follow'])
-
-    if user_id not in app.users or user_id_to_follow not in app.users:
-        return "사용자가 존재하지 않습니다", 400
-
-    user = app.users[user_id]
-    user.setdefault('follow', set()).add(user_id_to_follow)
-
-    return jsonify(user)
+def insert_user(user):
+    return current_app.database.execute(text("""
+    INSERT INTO users (name, email, profile, hashed_password) VALUES (:name, :email, :profile, :password)
+    """), user).lastrowid
 
 
-@ app.route("/unfollow", methods=['POST'])
-def unfollow():
-    payload = request.json
-    user_id = int(payload['id'])
-    user_id_to_follow = int(payload['unfollow'])
-
-    if user_id not in app.users or user_id_to_follow not in app.users:
-        return "사용자가 존재하지 않습니다", 400
-
-    user = app.users[user_id]
-    user.setdefault('follow', set()).discard(user_id_to_follow)
-
-    return jsonify(user)
+def insert_tweet(user_tweet):
+    current_app.database.execute(text("""
+    INSERT INTO tweets (user_id, tweet) VALUES (:id, :tweet)
+    """), user_tweet).rowcount
 
 
-@ app.route('/timeline/<int:user_id>', methods=['GET'])
-def timeline(user_id):
-    if user_id not in app.users:
-        return "사용자가 존재하지 않습니다", 400
+def get_timeline(user_id):
+    timeline = current_app.database.execute(text("""
+    SELECT t.user_id, t.tweet FROM tweets t
+    LEFT JOIN users_follow_list ufl ON ufl.user_id = :user_id
+    WHERE t.user_id = :user_id
+    OR t.user_id = ufl.follow_user_id
+    """), {"user_id": user_id}).fetchall()
 
-    follow_list = app.users[user_id].get('follow', set())
-    follow_list.add(user_id)
-    timeline = [tweet for tweet in app.tweets if tweet['user_id'] in follow_list]
+    return [{"user_id": tweet["user_id"], "tweet": tweet["tweet"]} for tweet in timeline]
 
-    return jsonify({
-        'user_id': user_id,
-        'timeline': timeline
-    })
+
+def insert_follow(user_follow):
+    current_app.database.execute(text("""
+    INSERT INTO users_follow_list (user_id, follow_user_id) VALUES (:id, :follow)
+    """), user_follow)
+
+
+def insert_unfollow(user_unfollow):
+    current_app.database.execute(text("""
+    DELETE FROM users_follow_list
+    WHERE user_id = :id
+    AND follow_user_id = :unfollow
+    """), user_unfollow)
+
+
+# Flask가 create_app이라는 이름의 함수를 자동으로 factory 함수로 인식, Flask 실행함.
+# test_config이라는 parameter는 unit test를 실행시킬 때, 테스트용 데이터베이스의 설정 정보를 적용하기 위함.
+def create_app(test_config=None):
+    app = Flask(__name__)
+
+    if not test_config:
+        app.config.from_pyfile("config.py")
+    else:
+        app.config.update(test_config)
+
+    database = create_engine(
+        app.config["DB_URL"], encoding="utf-8", max_overflow=0)  # 데이터베이스와 연결
+    app.database = database  # Flask instance의 attribute로 가리킴
+
+    @app.route("/ping", methods=["GET"])
+    def ping():
+        return "pong"
+
+    @app.route("/sign-up", methods=["POST"])
+    def sign_up():
+        new_user = request.json
+        new_user_id = insert_user(new_user)
+        new_user = get_user(new_user_id)
+        return jsonify(new_user)
+
+    @app.route("/tweet", methods=["POST"])
+    def tweet():
+        user_tweet = request.json
+        tweet = user_tweet["tweet"]
+
+        if len(tweet) > 300:
+            return "300자를 초과했습니다", 400
+
+        insert_tweet(user_tweet)
+
+        return "", 200
+
+    @app.route("/timeline/<int:user_id>", methods=["GET"])
+    def timeline(user_id):
+        return jsonify(dict(user_id=user_id, timeline=get_timeline(user_id)))
+
+    @app.route("/follow", methods=["POST"])
+    def follow():
+        payload = request.json
+        insert_follow(payload)
+        return "", 200
+
+    @app.route("/unfollow", methods=["POST"])
+    def unfollow():
+        payload = request.json
+        insert_unfollow(payload)
+        return "", 200
+
+    return app  # Flask instance를 return
 
 
 app.run(port=5000, debug=True)
